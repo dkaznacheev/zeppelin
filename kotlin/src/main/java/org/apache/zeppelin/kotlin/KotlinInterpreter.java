@@ -62,7 +62,6 @@ public class KotlinInterpreter extends Interpreter {
     String imports = properties.getProperty("zeppelin.interpreter.localRepo", "");
 
     completer = new KotlinCompleter();
-
     replProperties
         .receiver(new KotlinReceiver())
         .maxResult(maxResult)
@@ -71,7 +70,7 @@ public class KotlinInterpreter extends Interpreter {
         .shortenTypes(shortenTypes);
   }
 
-  public KotlinReplProperties properties() {
+  public KotlinReplProperties getKotlinReplProperties() {
     return replProperties;
   }
 
@@ -161,11 +160,12 @@ public class KotlinInterpreter extends Interpreter {
 
     PrintStream oldOut = System.out;
     PrintStream newOut = (out != null) ? new PrintStream(out) : null;
-    System.setOut(newOut);
-    InterpreterResult res = interpreter.eval(code);
-    System.setOut(oldOut);
-
-    return res;
+    try {
+      System.setOut(newOut);
+      return interpreter.eval(code);
+    } finally {
+      System.setOut(oldOut);
+    }
   }
 
   private List<String> getImportClasspath(String localRepo) {
@@ -180,7 +180,7 @@ public class KotlinInterpreter extends Interpreter {
       return classpath;
     }
     for (File file : files) {
-      if (!file.isDirectory()) {
+      if (file.isFile()) {
         classpath.add(file.getAbsolutePath());
       }
     }

@@ -31,7 +31,6 @@ import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 import org.apache.zeppelin.cluster.ClusterManagerClient;
 import org.apache.zeppelin.cluster.meta.ClusterMeta;
-import org.apache.zeppelin.cluster.meta.ClusterMetaType;
 import org.apache.zeppelin.conf.ZeppelinConfiguration;
 import org.apache.zeppelin.dep.DependencyResolver;
 import org.apache.zeppelin.display.AngularObject;
@@ -70,11 +69,11 @@ import org.apache.zeppelin.resource.DistributedResourcePool;
 import org.apache.zeppelin.resource.Resource;
 import org.apache.zeppelin.resource.ResourcePool;
 import org.apache.zeppelin.resource.ResourceSet;
-import org.apache.zeppelin.resource.WellKnownResourceName;
 import org.apache.zeppelin.scheduler.Job;
 import org.apache.zeppelin.scheduler.Job.Status;
 import org.apache.zeppelin.scheduler.JobListener;
 import org.apache.zeppelin.scheduler.Scheduler;
+import org.apache.zeppelin.scheduler.SchedulerFactory;
 import org.apache.zeppelin.user.AuthenticationInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,6 +87,7 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -99,6 +99,8 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+
+import static org.apache.zeppelin.cluster.meta.ClusterMetaType.INTP_PROCESS_META;
 
 /**
  * Entry point for Interpreter process.
@@ -238,6 +240,9 @@ public class RemoteInterpreterServer extends Thread
   @Override
   public void shutdown() throws TException {
     logger.info("Shutting down...");
+    // delete interpreter cluster meta
+    deleteClusterMeta();
+
     if (interpreterGroup != null) {
       synchronized (interpreterGroup) {
         for (List<Interpreter> session : interpreterGroup.values()) {
@@ -251,7 +256,9 @@ public class RemoteInterpreterServer extends Thread
         }
       }
     }
-
+    if (!isTest) {
+      SchedulerFactory.singleton().destroy();
+    }
     server.stop();
 
     // server.stop() does not always finish server.serve() loop
@@ -340,7 +347,21 @@ public class RemoteInterpreterServer extends Thread
     meta.put(ClusterMeta.LATEST_HEARTBEAT, LocalDateTime.now());
     meta.put(ClusterMeta.STATUS, ClusterMeta.ONLINE_STATUS);
 
-    clusterManagerClient.putClusterMeta(ClusterMetaType.INTP_PROCESS_META, interpreterGroupId, meta);
+    clusterManagerClient.putClusterMeta(INTP_PROCESS_META, interpreterGroupId, meta);
+  }
+
+  private void deleteClusterMeta() {
+    if (!zconf.isClusterMode()){
+      return;
+    }
+
+    try {
+      // delete interpreter cluster meta
+      clusterManagerClient.deleteClusterMeta(INTP_PROCESS_META, interpreterGroupId);
+      Thread.sleep(300);
+    } catch (InterruptedException e) {
+      logger.error(e.getMessage(), e);
+    }
   }
 
   @Override
@@ -658,24 +679,35 @@ public class RemoteInterpreterServer extends Thread
         // data from context.out is prepended to InterpreterResult if both defined
         context.out.flush();
         List<InterpreterResultMessage> resultMessages = context.out.toInterpreterResultMessage();
-        resultMessages.addAll(result.message());
 
+        for (InterpreterResultMessage resultMessage : result.message()) {
+          // only add non-empty InterpreterResultMessage
+          if (!StringUtils.isBlank(resultMessage.getData())) {
+            resultMessages.add(resultMessage);
+          }
+        }
+
+        List<String> stringResult = new ArrayList<>();
         for (InterpreterResultMessage msg : resultMessages) {
           if (msg.getType() == InterpreterResult.Type.IMG) {
             logger.debug("InterpreterResultMessage: IMAGE_DATA");
           } else {
             logger.debug("InterpreterResultMessage: " + msg.toString());
           }
+          stringResult.add(msg.getData());
         }
         // put result into resource pool
-        if (resultMessages.size() > 0) {
-          int lastMessageIndex = resultMessages.size() - 1;
-          if (resultMessages.get(lastMessageIndex).getType() == InterpreterResult.Type.TABLE) {
+        if (context.getLocalProperties().containsKey("saveAs")) {
+          if (stringResult.size() == 1) {
+            logger.info("Saving result into ResourcePool as single string: " +
+                    context.getLocalProperties().get("saveAs"));
             context.getResourcePool().put(
-                    context.getNoteId(),
-                    context.getParagraphId(),
-                    WellKnownResourceName.ZeppelinTableResult.toString(),
-                    resultMessages.get(lastMessageIndex));
+                    context.getLocalProperties().get("saveAs"), stringResult.get(0));
+          } else {
+            logger.info("Saving result into ResourcePool as string list: " +
+                    context.getLocalProperties().get("saveAs"));
+            context.getResourcePool().put(
+                    context.getLocalProperties().get("saveAs"), stringResult);
           }
         }
         return new InterpreterResult(result.code(), resultMessages);

@@ -46,6 +46,7 @@ public abstract class BasePythonInterpreterTest extends ConcurrentTestCase {
 
   protected InterpreterGroup intpGroup;
   protected Interpreter interpreter;
+  protected boolean isPython2;
 
   @Before
   public abstract void setUp() throws InterpreterException;
@@ -202,6 +203,15 @@ public abstract class BasePythonInterpreterTest extends ConcurrentTestCase {
     assertEquals(InterpreterResult.Code.SUCCESS, result.code());
     interpreterResultMessages = context.out.toInterpreterResultMessage();
     assertEquals(0, interpreterResultMessages.size());
+
+    // multiple text output
+    context = getInterpreterContext();
+    result = interpreter.interpret(
+            "for i in range(1,4):\n" + "\tprint(i)", context);
+    assertEquals(InterpreterResult.Code.SUCCESS, result.code());
+    interpreterResultMessages = context.out.toInterpreterResultMessage();
+    assertEquals(1, interpreterResultMessages.size());
+    assertEquals("1\n2\n3\n", interpreterResultMessages.get(0).getData());
   }
 
   @Test
@@ -292,7 +302,8 @@ public abstract class BasePythonInterpreterTest extends ConcurrentTestCase {
     context = getInterpreterContext();
     result = interpreter.interpret("import pandas as pd\n" +
         "df = pd.DataFrame({'id':[1,2,3], 'name':['a','b','c']})\nz.show(df)", context);
-    assertEquals(InterpreterResult.Code.SUCCESS, result.code());
+    assertEquals(context.out.toInterpreterResultMessage().toString(),
+            InterpreterResult.Code.SUCCESS, result.code());
     interpreterResultMessages = context.out.toInterpreterResultMessage();
     assertEquals(1, interpreterResultMessages.size());
     assertEquals(InterpreterResult.Type.TABLE, interpreterResultMessages.get(0).getType());

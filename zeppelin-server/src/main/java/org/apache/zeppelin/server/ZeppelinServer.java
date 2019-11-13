@@ -19,6 +19,7 @@ package org.apache.zeppelin.server;
 import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
+import java.util.List;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.stream.Stream;
@@ -43,7 +44,6 @@ import org.apache.zeppelin.interpreter.InterpreterFactory;
 import org.apache.zeppelin.interpreter.InterpreterOutput;
 import org.apache.zeppelin.interpreter.InterpreterSetting;
 import org.apache.zeppelin.interpreter.InterpreterSettingManager;
-import org.apache.zeppelin.interpreter.recovery.NullRecoveryStorage;
 import org.apache.zeppelin.interpreter.recovery.RecoveryStorage;
 import org.apache.zeppelin.interpreter.remote.RemoteInterpreterProcessListener;
 import org.apache.zeppelin.notebook.NoteEventListener;
@@ -66,6 +66,7 @@ import org.apache.zeppelin.util.ReflectionUtils;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.jmx.ConnectorServer;
 import org.eclipse.jetty.jmx.MBeanContainer;
+import org.eclipse.jetty.server.ForwardedRequestCustomizer;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.SecureRequestCustomizer;
@@ -83,6 +84,7 @@ import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.eclipse.jetty.util.thread.ThreadPool;
 import org.eclipse.jetty.webapp.WebAppContext;
 import org.eclipse.jetty.websocket.servlet.WebSocketServlet;
+import org.glassfish.hk2.api.Immediate;
 import org.glassfish.hk2.api.ServiceLocator;
 import org.glassfish.hk2.api.ServiceLocatorFactory;
 import org.glassfish.hk2.utilities.ServiceLocatorUtilities;
@@ -122,6 +124,11 @@ public class ZeppelinServer extends ResourceConfig {
 
     sharedServiceLocator = ServiceLocatorFactory.getInstance().create("shared-locator");
     ServiceLocatorUtilities.enableImmediateScope(sharedServiceLocator);
+    ServiceLocatorUtilities.addClasses(sharedServiceLocator,
+      NotebookRepoSync.class,
+      ImmediateErrorHandlerImpl.class);
+    ImmediateErrorHandlerImpl handler = sharedServiceLocator.getService(ImmediateErrorHandlerImpl.class);
+
     ServiceLocatorUtilities.bind(
         sharedServiceLocator,
         new AbstractBinder() {
@@ -134,7 +141,7 @@ public class ZeppelinServer extends ResourceConfig {
                     conf.getCredentialsEncryptKey());
 
             bindAsContract(InterpreterFactory.class).in(Singleton.class);
-            bindAsContract(NotebookRepoSync.class).to(NotebookRepo.class).in(Singleton.class);
+            bindAsContract(NotebookRepoSync.class).to(NotebookRepo.class).in(Immediate.class);
             bind(LuceneSearch.class).to(SearchService.class).in(Singleton.class);
             bindAsContract(Helium.class).in(Singleton.class);
             bind(conf).to(ZeppelinConfiguration.class);
@@ -243,6 +250,10 @@ public class ZeppelinServer extends ResourceConfig {
     LOG.info("Starting zeppelin server");
     try {
       jettyWebServer.start(); // Instantiates ZeppelinServer
+      List<ErrorData> errorData = handler.waitForAtLeastOneConstructionError(5 * 1000);
+      if(errorData.size() > 0 && errorData.get(0).getThrowable() != null) {
+        throw new Exception(errorData.get(0).getThrowable());
+      }
       if (conf.getJettyName() != null) {
         org.eclipse.jetty.http.HttpGenerator.setJettyVersion(conf.getJettyName());
       }
@@ -295,9 +306,10 @@ public class ZeppelinServer extends ResourceConfig {
     final Server server = new Server(threadPool);
     ServerConnector connector;
 
+    HttpConfiguration httpConfig = new HttpConfiguration();
+    httpConfig.addCustomizer(new ForwardedRequestCustomizer());
     if (conf.useSsl()) {
       LOG.debug("Enabling SSL for Zeppelin Server on port " + conf.getServerSslPort());
-      HttpConfiguration httpConfig = new HttpConfiguration();
       httpConfig.setSecureScheme("https");
       httpConfig.setSecurePort(conf.getServerSslPort());
       httpConfig.setOutputBufferSize(32768);
@@ -314,7 +326,7 @@ public class ZeppelinServer extends ResourceConfig {
               new SslConnectionFactory(getSslContextFactory(conf), HttpVersion.HTTP_1_1.asString()),
               new HttpConnectionFactory(httpsConfig));
     } else {
-      connector = new ServerConnector(server);
+      connector = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
     }
 
     configureRequestHeaderSize(conf, connector);
